@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Driver App - Event Heatmap</title>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCcYKj43SqvLuJ-RutR8aPBcAYtl6gmM38&libraries=visualization,directions"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+        }
+        #map {
+            flex: 3;
+            height: 100%;
+        }
+        #sidebar {
+            flex: 1;
+            background: #f4f4f4;
+            padding: 10px;
+            overflow-y: auto;
+        }
+        #event-demand-button {
+            margin: 10px;
+            padding: 8px 12px;
+            font-size: 14px;
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        #event-demand-button:hover {
+            background: #0056b3;
+        }
+        .event-item {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            cursor: pointer;
+        }
+        .event-item:hover {
+            background: #ddd;
+        }
+        #directions-button {
+            margin: 10px;
+            padding: 8px 12px;
+            font-size: 14px;
+            background: #28a745;
+            color: white;
+            border: none;
+            cursor: pointer;
+            display: none; /* Hidden by default */
+        }
+        #directions-button:hover {
+            background: #218838;
+        }
+        #location-error {
+            color: red;
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <h2>Events in Bengaluru</h2>
+        <button id="event-demand-button">Load Events</button>
+        <div id="event-list"></div>
+    </div>
+    <div id="map"></div>
+    <button id="directions-button">Show Directions</button>
+    <div id="location-error"></div>
+
+    <script>
+        // Initialize the map centered at Bengaluru
+        const map = new google.maps.Map(document.getElementById("map"), {
+            center: { lat: 12.9716, lng: 77.5946 }, // Bengaluru coordinates
+            zoom: 12
+        });
+
+        // Heatmap data
+        let heatmapData = [];
+
+        // Marker for user's live location
+        let userMarker;
+
+        // Marker for selected event
+        let eventMarker;
+
+        // Directions renderer
+        let directionsRenderer;
+
+        // Heatmap layer
+        let heatmap;
+
+        // Function to handle location errors
+        function handleLocationError(error) {
+            const locationError = document.getElementById("location-error");
+            switch (error.code) {
+                case error.PERMISSION_DENIED:
+                    locationError.textContent = "Location access denied. Please enable location access in your browser settings.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    locationError.textContent = "Location information is unavailable.";
+                    break;
+                case error.TIMEOUT:
+                    locationError.textContent = "The request to get your location timed out.";
+                    break;
+                default:
+                    locationError.textContent = "An unknown error occurred while fetching your location.";
+            }
+        }
+
+        // Get user's live location
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const userLocation = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude
+                    };
+                    // Add a marker for the user's location
+                    userMarker = new google.maps.Marker({
+                        position: userLocation,
+                        map: map,
+                        title: "Your Location",
+                        icon: {
+                            url: "http://maps.google.com/mapfiles/ms/icons/blue-dot.png" // Blue marker for user
+                        }
+                    });
+                    // Center the map on the user's location
+                    map.setCenter(userLocation);
+                },
+                (error) => {
+                    handleLocationError(error);
+                    // Fallback to Bengaluru if location access is denied
+                    map.setCenter({ lat: 12.9716, lng: 77.5946 });
+                }
+            );
+        } else {
+            document.getElementById("location-error").textContent = "Geolocation is not supported by this browser.";
+            // Fallback to Bengaluru if geolocation is not supported
+            map.setCenter({ lat: 12.9716, lng: 77.5946 });
+        }
+
+        // Fetch events and update heatmap
+        document.getElementById("event-demand-button").addEventListener("click", () => {
+            console.log("Fetching events...");
+            fetch("/fetch_events")
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error("Network response was not ok");
+                    }
+                    return response.json();
+                })
+                .then(events => {
+                    console.log("Events fetched:", events);
+                    heatmapData = events.map(event => {
+                        return {
+                            location: new google.maps.LatLng(event.location[1], event.location[0]),
+                            weight: event.rank // Use event rank as weight
+                        };
+                    });
+
+                    // Create or update heatmap
+                    if (!heatmap) {
+                        heatmap = new google.maps.visualization.HeatmapLayer({
+                            data: heatmapData,
+                            map: map,
+                            radius: 20, // Initial radius
+                            gradient: [
+                                "rgba(0, 255, 0, 0)", // Light green
+                                "rgba(0, 255, 0, 0.7)", // Green
+                                "rgba(255, 0, 0, 1)"  // Red
+                            ],
+                            dissipating: false // Prevent heatmap from disappearing on zoom
+                        });
+
+                        // Adjust heatmap radius on zoom
+                        google.maps.event.addListener(map, "zoom_changed", () => {
+                            const zoom = map.getZoom();
+                            heatmap.set("radius", zoom * 2); // Adjust radius based on zoom level
+                        });
+                    } else {
+                        heatmap.setData(heatmapData);
+                    }
+
+                    // Display events in the sidebar
+                    const eventList = document.getElementById("event-list");
+                    eventList.innerHTML = ""; // Clear previous events
+                    events.forEach(event => {
+                        const eventItem = document.createElement("div");
+                        eventItem.className = "event-item";
+                        eventItem.innerHTML = `
+                            <strong>${event.title}</strong><br>
+                            <small>Date: ${new Date(event.start).toLocaleString()}</small><br>
+                            <small>Location: ${event.location[1]}, ${event.location[0]}</small>
+                        `;
+                        eventItem.addEventListener("click", () => {
+                            // Pinpoint the event location on the map
+                            const eventLocation = new google.maps.LatLng(event.location[1], event.location[0]);
+                            if (eventMarker) {
+                                eventMarker.setMap(null); // Remove previous event marker
+                            }
+                            eventMarker = new google.maps.Marker({
+                                position: eventLocation,
+                                map: map,
+                                title: event.title,
+                                icon: {
+                                    url: "http://maps.google.com/mapfiles/ms/icons/red-dot.png" // Red marker for event
+                                }
+                            });
+                            map.setCenter(eventLocation);
+                            map.setZoom(15); // Zoom in for better visibility
+
+                            // Show the "Show Directions" button
+                            document.getElementById("directions-button").style.display = "block";
+                            document.getElementById("directions-button").onclick = () => {
+                                showDirections(eventLocation);
+                            };
+                        });
+                        eventList.appendChild(eventItem);
+                    });
+                })
+                .catch(error => console.error("Error fetching events:", error));
+        });
+
+        // Function to show directions
+        function showDirections(destination) {
+            console.log("Calculating directions...");
+            console.log("User Location:", userMarker ? userMarker.getPosition() : "Not available");
+            console.log("Destination:", destination);
+
+            if (!userMarker || !destination) {
+                alert("Your location is not available. Please enable location access.");
+                return;
+            }
+
+            if (!directionsRenderer) {
+                directionsRenderer = new google.maps.DirectionsRenderer({
+                    map: map,
+                    suppressMarkers: true // Hide default markers
+                });
+            }
+
+            const directionsService = new google.maps.DirectionsService();
+            directionsService.route(
+                {
+                    origin: userMarker.getPosition(),
+                    destination: destination,
+                    travelMode: google.maps.TravelMode.DRIVING
+                },
+                (response, status) => {
+                    if (status === "OK") {
+                        console.log("Directions calculated successfully:", response);
+                        directionsRenderer.setDirections(response);
+                    } else {
+                        console.error("Directions request failed:", status);
+                        alert("Failed to calculate directions. Please try again.");
+                    }
+                }
+            );
+        }
+    </script>
+</body>
+</html>
